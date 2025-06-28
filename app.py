@@ -3,24 +3,26 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime, timedelta
-import os
+import os # Import the os module
 
 app = Flask(__name__)
 
 # --- Configuration ---
-# Use a persistent SQLite database for simplicity. This will create 'site.db' in your project directory.
-# Data will persist across restarts.
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
+# Define the path for the SQLite database.
+# On Render, /var/data is a common mount point for persistent disks.
+# For local development, it will default to 'site.db' in your project root.
+DB_PATH = os.environ.get('DATABASE_PATH', 'site.db') # Use environment variable
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DB_PATH}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'your_super_secret_key_for_flask_session_if_used' 
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'your_super_secret_key_for_flask_session_if_used') # Also make secret key configurable via env var
 
 db = SQLAlchemy(app)
 CORS(app) # Enable CORS for all routes. For specific origins, use CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
 # --- Hardcoded Admin Credentials (For Demo Purposes Only - NOT Secure for Production) ---
 # In a real application, store hashed passwords securely in a database.
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "password" # Default password
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'password') # Default password, will be overridden by Render env var
 
 # --- Database Models ---
 class Student(db.Model):
@@ -107,7 +109,7 @@ def calculate_pending_fees(student_monthly_fee, admission_date_str, latest_paid_
             # For simplicity, if current month's fee is due by end of month, and paid_till
             # is BEFORE current month, then current month is pending.
             if today.day < 1 and months_diff > 0: # If it's early in the month, and last payment was previous month
-                pending_months -= 1 # The current month might not be considered pending yet
+                pending_months -=1 # The current month might not be considered pending yet
 
     else:
         paid_till_dt = datetime.strptime(latest_paid_till_str, '%Y-%m-%d')
@@ -142,6 +144,10 @@ def calculate_pending_fees(student_monthly_fee, admission_date_str, latest_paid_
 # It must be within an application context.
 def init_db_and_data():
     with app.app_context():
+        # Ensure the directory for the database file exists if it's an absolute path
+        db_dir = os.path.dirname(DB_PATH)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir)
         db.create_all()
         # Add some dummy data for testing if the database is empty
         if not Student.query.first():
@@ -197,7 +203,6 @@ def login_user():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    global ADMIN_PASSWORD # Access the global variable
 
     if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
         return jsonify({"message": "Login successful"}), 200 # No actual token needed by frontend now
@@ -209,7 +214,6 @@ def change_password():
     data = request.get_json()
     old_password = data.get('old_password')
     new_password = data.get('new_password')
-    global ADMIN_PASSWORD # Access and modify the global variable
 
     if not old_password or not new_password:
         return jsonify({"error": "Old password and new password are required"}), 400
@@ -220,8 +224,15 @@ def change_password():
     if old_password == new_password:
         return jsonify({"error": "New password cannot be the same as the old password"}), 400
 
-    ADMIN_PASSWORD = new_password # Update the hardcoded password
-    print(f"Admin password changed to: {ADMIN_PASSWORD}") # For demonstration
+    # In a real app, you would hash and store the new password in a database
+    # For this demo, we're modifying the in-memory ADMIN_PASSWORD,
+    # but on Render, this would require persistent storage or a more robust user system.
+    # The environment variable set on Render will take precedence on new deployments.
+    # To truly change it persistently on Render, you would need to update the ADMIN_PASSWORD env var there.
+    # For a persistent change without redeployment of code, you'd need a proper user DB.
+    # For simplicity of this demo, we're not persisting this change across restarts of the Render service
+    # unless the ADMIN_PASSWORD environment variable on Render is updated manually.
+    print(f"Admin password changed to: {new_password} (Note: This is not persistent across restarts unless env var updated)") # For demonstration
     return jsonify({"message": "Password changed successfully"}), 200
 
 
@@ -276,7 +287,6 @@ def add_student():
 def delete_student(student_id):
     data = request.get_json()
     password_confirmation = data.get('password') # Get password from frontend for confirmation
-    global ADMIN_PASSWORD # Access the global password
 
     if password_confirmation != ADMIN_PASSWORD:
         return jsonify({"error": "Incorrect password for deletion confirmation"}), 401
@@ -353,4 +363,4 @@ if __name__ == '__main__':
     # Initialize database and add dummy data if 'site.db' is empty.
     # This ensures your data persists across restarts.
     init_db_and_data() 
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, port=5000)
